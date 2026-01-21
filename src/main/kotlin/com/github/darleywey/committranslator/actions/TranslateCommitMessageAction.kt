@@ -12,15 +12,22 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vcs.VcsDataKeys
+import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.vcs.ui.CommitMessage
+import com.intellij.ui.AnimatedIcon
 
 class TranslateCommitMessageAction : AnAction() {
+
+    @Volatile
+    private var isTranslating = false
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val commitMessage = e.getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL) as? CommitMessage ?: return
+        
+        if (isTranslating) return
         
         val originalText = commitMessage.text.trim()
         if (originalText.isEmpty()) {
@@ -49,6 +56,8 @@ class TranslateCommitMessageAction : AnAction() {
             return
         }
 
+        isTranslating = true
+
         ProgressManager.getInstance().run(object : Task.Backgroundable(
             project,
             CommitTranslatorBundle.message("action.translate.progress"),
@@ -60,6 +69,7 @@ class TranslateCommitMessageAction : AnAction() {
                 val result = TranslationService.getInstance().translateToEnglish(originalText)
                 
                 ApplicationManager.getApplication().invokeLater {
+                    isTranslating = false
                     result.fold(
                         onSuccess = { translatedText ->
                             commitMessage.setCommitMessage(translatedText)
@@ -74,11 +84,23 @@ class TranslateCommitMessageAction : AnAction() {
                     )
                 }
             }
+
+            override fun onCancel() {
+                isTranslating = false
+            }
         })
     }
 
     override fun update(e: AnActionEvent) {
         val commitMessage = e.getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL)
         e.presentation.isEnabledAndVisible = commitMessage != null
+        
+        if (isTranslating) {
+            e.presentation.icon = AnimatedIcon.Default.INSTANCE
+            e.presentation.isEnabled = false
+        } else {
+            e.presentation.icon = IconLoader.getIcon("/icons/translate.svg", javaClass)
+            e.presentation.isEnabled = true
+        }
     }
 }

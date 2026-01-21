@@ -6,12 +6,12 @@ import com.github.darleywey.committranslator.settings.CommitTranslatorSettings
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DataKey
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.ui.Messages
-import com.intellij.openapi.vcs.VcsDataKeys
 import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.vcs.ui.CommitMessage
 import com.intellij.ui.AnimatedIcon
@@ -21,16 +21,19 @@ class TranslateCommitMessageAction : AnAction() {
     @Volatile
     private var isTranslating = false
 
+    private val COMMIT_MESSAGE_CONTROL = DataKey.create<CommitMessage>("Vcs.CommitMessage.Control")
+
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val commitMessage = e.getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL) as? CommitMessage ?: return
+        val commitMessage = e.getData(COMMIT_MESSAGE_CONTROL) ?: return
         
         if (isTranslating) return
         
-        val originalText = commitMessage.text.trim()
-        if (originalText.isEmpty()) {
+        val getTextMethod = commitMessage::class.java.methods.find { it.name == "getText" }
+        val originalText = getTextMethod?.invoke(commitMessage) as? String ?: return
+        if (originalText.isBlank()) {
             Messages.showWarningDialog(
                 project,
                 CommitTranslatorBundle.message("action.translate.emptyMessage"),
@@ -72,14 +75,15 @@ class TranslateCommitMessageAction : AnAction() {
                     isTranslating = false
                     result.fold(
                         onSuccess = { translatedText ->
-                            commitMessage.setCommitMessage(translatedText)
+                            val setMethod = commitMessage::class.java.methods.find { 
+                                it.name == "setCommitMessage" && it.parameterCount == 1 
+                            }
+                            setMethod?.invoke(commitMessage, translatedText)
                         },
                         onFailure = { error ->
-                            Messages.showErrorDialog(
-                                project,
-                                CommitTranslatorBundle.message("action.translate.error", error.message ?: "Unknown error"),
-                                CommitTranslatorBundle.message("action.translate.title")
-                            )
+                            val errorMessage: String = CommitTranslatorBundle.message("action.translate.error", error.message ?: "Unknown error")
+                            val title: String = CommitTranslatorBundle.message("action.translate.title")
+                            Messages.showErrorDialog(project, errorMessage, title)
                         }
                     )
                 }
@@ -92,7 +96,7 @@ class TranslateCommitMessageAction : AnAction() {
     }
 
     override fun update(e: AnActionEvent) {
-        val commitMessage = e.getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL)
+        val commitMessage = e.getData(COMMIT_MESSAGE_CONTROL)
         e.presentation.isEnabledAndVisible = commitMessage != null
         
         if (isTranslating) {

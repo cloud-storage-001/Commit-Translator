@@ -11,8 +11,6 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- Settings -->
-        <applicationService serviceImplementation="com.github.darleywey.committranslator.settings.CommitTranslatorSettings"/>
-        <applicationService serviceImplementation="com.github.darleywey.committranslator.services.TranslationService"/>
         <applicationConfigurable
                 parentId="tools"
                 instance="com.github.darleywey.committranslator.settings.CommitTranslatorConfigurable"

@@ -13,7 +13,6 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.IconLoader
-import com.intellij.openapi.vcs.ui.CommitMessage
 import com.intellij.ui.AnimatedIcon
 
 class TranslateCommitMessageAction : AnAction() {
@@ -21,19 +20,21 @@ class TranslateCommitMessageAction : AnAction() {
     @Volatile
     private var isTranslating = false
 
-    private val COMMIT_MESSAGE_CONTROL = DataKey.create<CommitMessage>("Vcs.CommitMessage.Control")
+    private val COMMIT_MESSAGE_CONTROL = DataKey.create<Any>("Vcs.CommitMessage.Control")
+    private val CHECKIN_PANEL = DataKey.create<Any>("Vcs.CheckinProjectPanel")
+    private val REFRESHABLE_PANEL = DataKey.create<Any>("RefreshablePanel")
+    private val WORKFLOW_HANDLER = DataKey.create<Any>("Vcs.CommitWorkflowHandler")
 
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val commitMessage = e.getData(COMMIT_MESSAGE_CONTROL) ?: return
-        
+        val commitMessage = findCommitMessage(e) ?: return
+
         if (isTranslating) return
-        
-        val getTextMethod = commitMessage::class.java.methods.find { it.name == "getText" }
-        val originalText = getTextMethod?.invoke(commitMessage) as? String ?: return
-        if (originalText.isBlank()) {
+
+        val originalText = extractText(commitMessage)
+        if (originalText.isNullOrBlank()) {
             Messages.showWarningDialog(
                 project,
                 CommitTranslatorBundle.message("action.translate.emptyMessage"),
@@ -68,17 +69,14 @@ class TranslateCommitMessageAction : AnAction() {
         ) {
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                
+
                 val result = TranslationService.getInstance().translateToEnglish(originalText)
-                
+
                 ApplicationManager.getApplication().invokeLater {
                     isTranslating = false
                     result.fold(
                         onSuccess = { translatedText ->
-                            val setMethod = commitMessage::class.java.methods.find { 
-                                it.name == "setCommitMessage" && it.parameterCount == 1 
-                            }
-                            setMethod?.invoke(commitMessage, translatedText)
+                            updateCommitMessage(commitMessage, translatedText)
                         },
                         onFailure = { error ->
                             val errorMessage: String = CommitTranslatorBundle.message("action.translate.error", error.message ?: "Unknown error")
@@ -96,15 +94,98 @@ class TranslateCommitMessageAction : AnAction() {
     }
 
     override fun update(e: AnActionEvent) {
-        val commitMessage = e.getData(COMMIT_MESSAGE_CONTROL)
+        val commitMessage = findCommitMessage(e)
         e.presentation.isEnabledAndVisible = commitMessage != null
-        
+        e.presentation.isEnabled = !isTranslating
+
         if (isTranslating) {
             e.presentation.icon = AnimatedIcon.Default.INSTANCE
-            e.presentation.isEnabled = false
         } else {
             e.presentation.icon = IconLoader.getIcon("/icons/translate.svg", javaClass)
-            e.presentation.isEnabled = true
         }
+    }
+
+    private fun extractText(commitMessage: Any): String? {
+        try {
+            val methods = commitMessage.javaClass.methods
+
+            // 1. 尝试 getCommitMessage()
+            val getCommitMsgMethod = methods.find { it.name == "getCommitMessage" && it.parameterCount == 0 }
+            val commitMsgObj = getCommitMsgMethod?.invoke(commitMessage)
+
+            if (commitMsgObj is String) return commitMsgObj
+
+            if (commitMsgObj != null) {
+                val innerMethods = commitMsgObj.javaClass.methods
+                innerMethods.find { it.name == "getText" || it.name == "getComment" }?.let {
+                    return it.invoke(commitMsgObj) as? String
+                }
+            }
+
+            // 2. 尝试从 getCommitMessageUi() 获取
+            methods.find { it.name == "getCommitMessageUi" }?.invoke(commitMessage)?.let { uiObj ->
+                uiObj.javaClass.methods.find { it.name == "getText" || it.name == "getComment" }?.let {
+                    return it.invoke(uiObj) as? String
+                }
+            }
+
+            // 3. 通用回退
+            methods.find { it.name == "getText" || it.name == "getComment" }?.let {
+                return it.invoke(commitMessage) as? String
+            }
+        } catch (ex: Exception) {}
+        return null
+    }
+
+    private fun updateCommitMessage(commitMessage: Any, text: String) {
+        try {
+            val methods = commitMessage.javaClass.methods
+
+            // 1. 尝试直接 setCommitMessage
+            val setMethod = methods.find {
+                it.name == "setCommitMessage" && it.parameterCount == 1 && it.parameterTypes[0] == String::class.java
+            }
+
+            if (setMethod != null) {
+                setMethod.invoke(commitMessage, text)
+            } else {
+                // 2. 尝试获取 UI 并设置
+                val getUiMethod = methods.find { it.name == "getCommitMessageUi" || it.name == "getCommitMessage" }
+                val uiObj = getUiMethod?.invoke(commitMessage)
+                if (uiObj != null && uiObj !is String) {
+                    uiObj.javaClass.methods.find {
+                        (it.name == "setText" || it.name == "setCommitMessage") && it.parameterCount == 1
+                    }?.invoke(uiObj, text)
+                }
+            }
+        } catch (ex: Exception) {}
+    }
+
+    private fun findCommitMessage(e: AnActionEvent): Any? {
+        e.getData(COMMIT_MESSAGE_CONTROL)?.let { return it }
+
+        e.getData(WORKFLOW_HANDLER)?.let { handler ->
+            try {
+                handler.javaClass.methods.find { it.name == "getUi" }?.invoke(handler)?.let { return it }
+            } catch (ex: Exception) {}
+        }
+
+        e.getData(CHECKIN_PANEL)?.let { return it }
+        e.getData(REFRESHABLE_PANEL)?.let { return it }
+
+        var component = e.getData(com.intellij.openapi.actionSystem.PlatformCoreDataKeys.CONTEXT_COMPONENT)
+        while (component != null) {
+            val methods = component.javaClass.methods
+            if (methods.any { it.name == "setCommitMessage" || it.name == "setComment" }) {
+                return component
+            }
+            if (methods.any { it.name == "getEditorField" }) {
+                try {
+                    methods.find { it.name == "getEditorField" }?.invoke(component)?.let { return it }
+                } catch (ex: Exception) {}
+            }
+            component = component.parent
+        }
+        return null
     }
 }

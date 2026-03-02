@@ -37,7 +37,7 @@ class TranslationService {
         val model: String,
         val messages: List<ChatMessage>,
         val temperature: Double = 0.3,
-        val max_tokens: Int = 1000
+        val max_completion_tokens: Int = 1000
     )
 
     @Serializable
